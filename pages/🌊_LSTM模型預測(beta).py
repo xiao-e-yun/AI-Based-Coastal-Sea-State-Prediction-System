@@ -584,7 +584,7 @@ if st.sidebar.button("🌊 執行 LSTM 預測"):
 
         # 3. 在圖表下方，顯示風險評估結果
         st.write("---")
-        st.subheader("航行風險評估 (基於預測)")
+        st.subheader("近岸作業風險評估 (基於預測)")
 
         # <<< 修正順序：第一步，先找出對應的 key >>>
         param_key_in_config = next((key for key, info in st.session_state.get('parameter_info', {}).items() 
