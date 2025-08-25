@@ -94,7 +94,7 @@ def assess_risk(value, param_key):
         return "警告"
     else:
         return "安全"
-def get_local_model_paths(parameters: dict):
+def get_local_model_paths(parameters: dict, has_npu: bool):
     """根據參數字典生成唯一的模型、scaler和history路徑"""
     model_dir = "trained_models"
     if not os.path.exists(model_dir):
@@ -103,18 +103,24 @@ def get_local_model_paths(parameters: dict):
     config_str = "".join([f"{k}:{v}" for k, v in sorted(parameters.items())])
     model_hash = hashlib.md5(config_str.encode()).hexdigest()
     
-    model_path = os.path.join(model_dir, f"lstm_model_{model_hash}.keras")
+    # if run on NPU, should be save as .tflite, but for simplicity, we still use .keras here
+    if has_npu:
+        model_path = os.path.join(model_dir, f"lstm_model_{model_hash}.tflite")
+    else:
+        model_path = os.path.join(model_dir, f"lstm_model_{model_hash}.keras")
     scaler_path = os.path.join(model_dir, f"lstm_scaler_{model_hash}.joblib")
     # 新增 history 路徑
     history_path = os.path.join(model_dir, f"lstm_history_{model_hash}.json")
     
     return model_path, scaler_path, history_path
 
-def save_local_model(model, scaler, history_data: dict, parameters: dict):
+def save_local_model(model, scaler, history_data: dict, parameters: dict, has_npu: bool):
     """保存模型、scaler 和訓練歷史"""
     try:
-        model_path, scaler_path, history_path = get_local_model_paths(parameters)
-        model.save(model_path)
+        model_path, scaler_path, history_path = get_local_model_paths(parameters, has_npu)
+        if has_npu: model.save(model_path)
+        else:
+            with open(model_path, 'wb') as f: f.write(model)
         joblib.dump(scaler, scaler_path)
         # 將 history 字典存成 json
         with open(history_path, 'w') as f:
@@ -123,19 +129,23 @@ def save_local_model(model, scaler, history_data: dict, parameters: dict):
     except Exception as e:
         st.warning(f"儲存模型快取時發生錯誤: {e}")
 
-def load_local_model(parameters: dict):
+def load_local_model(parameters: dict, has_npu: bool):
     """嘗試載入已保存的模型、scaler 和訓練歷史"""
-    model_path, scaler_path, history_path = get_local_model_paths(parameters)
+    model_path, scaler_path, history_path = get_local_model_paths(parameters, has_npu)
     
     # 確認三個檔案都存在
     if os.path.exists(model_path) and os.path.exists(scaler_path) and os.path.exists(history_path):
         try:
-            tf.keras.backend.clear_session()
-            model = load_model(model_path)
             scaler = joblib.load(scaler_path)
-            # 讀取 history json
             with open(history_path, 'r') as f:
                 history_data = json.load(f)
+
+            if has_npu:
+                model = model_path
+            else:
+                tf.keras.backend.clear_session()
+                model = load_model(model_path)
+
             return model, scaler, history_data
         except Exception as e:
             st.warning(f"載入快取模型時發生錯誤: {e}。將重新進行訓練。")
@@ -185,9 +195,9 @@ class AccuracyHistory(Callback):
         self.train_correlations, self.val_correlations = [], []
 
     # 1. 將所有計算邏輯移到一個新函式中，並接收 model 作為參數
-    def calculate_metrics(self, model):
+    def calculate_metrics(self, predict):
         """手動計算並記錄一次準確率和相關係數"""
-        train_pred_scaled = model.predict(self.X_train, verbose=0)
+        train_pred_scaled = predict(self.X_train)
         train_actual_scaled = self.y_train.reshape(-1, 1)
         train_pred_original = self.scaler.inverse_transform(train_pred_scaled)
         train_actual_original = self.scaler.inverse_transform(train_actual_scaled)
@@ -198,7 +208,7 @@ class AccuracyHistory(Callback):
             self.train_correlations.append(train_corr)
         else: self.train_correlations.append(np.nan)
 
-        val_pred_scaled = model.predict(self.X_test, verbose=0)
+        val_pred_scaled = predict(self.X_test)
         val_actual_scaled = self.y_test.reshape(-1, 1)
         val_pred_original = self.scaler.inverse_transform(val_pred_scaled)
         val_actual_original = self.scaler.inverse_transform(val_actual_scaled)
@@ -369,8 +379,17 @@ if st.sidebar.button("🌊 執行 LSTM 預測"):
         "missing_strategy": missing_value_strategy
     }
 
-    model, scaler, history_data = load_local_model(model_params)
+    try:
+        delegate = tf.lite.experimental.load_delegate('libnnapi_delegate.so')
+        print("✅ NNAPI delegate 可用，裝置可能支援 NPU")
+        has_npu = True
+    except Exception as e:
+        print("❌ 無法載入 NNAPI delegate，可能不支援 NPU 或系統未開啟 NNAPI")
+        has_npu = False
+
+    model, scaler, history_data = load_local_model(model_params, has_npu)
     history = None 
+
 
     if model is None:
         st.info("🛠️ 未找到快取模型，開始新的訓練...")
@@ -407,14 +426,21 @@ if st.sidebar.button("🌊 執行 LSTM 預測"):
             history = model.fit(X_train, y_train, epochs=epochs, batch_size=batch_size, 
                                 validation_data=(X_test, y_test), 
                                 callbacks=[early_stopping, accuracy_history_callback, progress_callback], 
-                                verbose=0)
+                                )
             history_data = history.history
         except Exception as e:
             st.error(f"LSTM 模型訓練失敗：{e}")
             st.stop()
+
+        if has_npu:
+            converter = tf.lite.TFLiteConverter.from_keras_model(model)
+            converter.optimizations = [tf.lite.Optimize.DEFAULT]  # 啟用量化可加速 NPU
+            converter.experimental_new_converter=True
+            converter.target_spec.supported_ops = [tf.lite.OpsSet.TFLITE_BUILTINS, tf.lite.OpsSet.SELECT_TF_OPS]
+            model = converter.convert()
             
         st.success("模型訓練完成！")
-        save_local_model(model, scaler, history_data, model_params)
+        save_local_model(model, scaler, history_data, model_params, has_npu)
     else:
         st.success("✅ 成功載入快取模型！")
         with st.spinner("STEP 2/3: 正在準備數據..."):
@@ -426,6 +452,25 @@ if st.sidebar.button("🌊 執行 LSTM 預測"):
             X_train = np.reshape(X_train, (X_train.shape[0], X_train.shape[1], 1))
             X_test = np.reshape(X_test, (X_test.shape[0], X_test.shape[1], 1))
             accuracy_history_callback = AccuracyHistory(X_train, y_train, X_test, y_test, scaler, epsilon_value, look_back)
+
+
+    # unify model
+    if has_npu:
+        interpreter = tf.lite.Interpreter(
+            model_path=model,
+            experimental_delegates=[delegate]
+        )
+        interpreter.allocate_tensors()
+
+        input_details = interpreter.get_input_details()
+        output_details = interpreter.get_output_details()
+
+        predict = lambda x: interpreter.set_tensor(input_details[0]['index'], x.astype(np.float32)) or interpreter.invoke() or interpreter.get_tensor(output_details[0]['index'])
+    else: 
+        predict = lambda x: model.predict(x)
+
+
+        
 
     with st.spinner("STEP 3/3: 正在評估與視覺化..."):
         st.subheader("📚 訓練數據概覽")
@@ -486,16 +531,18 @@ if st.sidebar.button("🌊 執行 LSTM 預測"):
                     st.info("數據品質非常高，沒有偵測到缺失、零、負值或異常值。")
         st.write("---")
         st.subheader("📉 模型性能評估")
-        train_predict = model.predict(X_train)
+
+
+        train_predict = predict(X_train)
         train_predict = scaler.inverse_transform(train_predict)
         y_train_actual = scaler.inverse_transform(y_train.reshape(-1, 1))
-        test_predict = model.predict(X_test)
+        test_predict = predict(X_test)
         test_predict = scaler.inverse_transform(test_predict)
         y_test_actual = scaler.inverse_transform(y_test.reshape(-1, 1))
         train_rmse = np.sqrt(mean_squared_error(y_train_actual, train_predict))
         test_rmse = np.sqrt(mean_squared_error(y_test_actual, test_predict))
         
-        accuracy_history_callback.calculate_metrics(model)
+        accuracy_history_callback.calculate_metrics(predict)
         final_train_accuracy = accuracy_history_callback.train_accuracies[-1]
         final_val_accuracy = accuracy_history_callback.val_accuracies[-1]
         train_corr = accuracy_history_callback.train_correlations[-1]
@@ -545,7 +592,7 @@ if st.sidebar.button("🌊 執行 LSTM 預測"):
         last_sequence = scaled_data[-look_back:]
         future_predictions = []
         for _ in range(forecast_period_value):
-            next_pred = model.predict(last_sequence.reshape(1, look_back, 1), verbose=0)[0, 0]
+            next_pred = predict(last_sequence.reshape(1, look_back, 1))[0, 0]
             future_predictions.append(next_pred)
             last_sequence = np.append(last_sequence[1:], [[next_pred]], axis=0)
         future_predictions = scaler.inverse_transform(np.array(future_predictions).reshape(-1, 1))
