@@ -16,3 +16,6 @@ joblib
 folium
 streamlit_folium
 schedule
+transformers
+torch
+tf-keras

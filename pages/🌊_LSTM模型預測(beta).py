@@ -12,6 +12,7 @@ from sklearn.preprocessing import MinMaxScaler
 from sklearn.metrics import mean_squared_error
 from scipy.stats import pearsonr 
 import zipfile
+from transformers import pipeline
 
 # --- 新增 ---
 import joblib
@@ -118,9 +119,10 @@ def save_local_model(model, scaler, history_data: dict, parameters: dict, has_np
     """保存模型、scaler 和訓練歷史"""
     try:
         model_path, scaler_path, history_path = get_local_model_paths(parameters, has_npu)
-        if has_npu: model.save(model_path)
-        else:
+        if has_npu: 
             with open(model_path, 'wb') as f: f.write(model)
+        else:
+            model.save(model_path)
         joblib.dump(scaler, scaler_path)
         # 將 history 字典存成 json
         with open(history_path, 'w') as f:
@@ -234,6 +236,52 @@ class AccuracyHistory(Callback):
         logs['val_accuracy'] = self.val_accuracies[-1]
         logs['train_correlation'] = self.train_correlations[-1]
         logs['val_correlation'] = self.val_correlations[-1]
+
+
+# TODO: Reset chat history
+def chat_system():
+    st.header("🤖 AI 問答")
+    if 'chat_history' not in st.session_state:
+        st.session_state['chat_history'] = []
+    pipeline = load_chat_pipeline()
+
+    col1, col2 = st.columns([4, 1])
+    with col1:
+        user_input = st.text_input("請輸入您的問題:", key='lstm_chat_input', label_visibility='collapsed')
+    with col2:
+        if st.button("發送", key='lstm_chat_send') and user_input.strip():
+                st.session_state['chat_history'].append(("user", user_input.strip()))
+                response = pipeline(
+                        f"""
+<數據集參數>
+{json.dumps(st.session_state.get('parameter_info', {}), ensure_ascii=False)}
+</數據集參數>
+<模型參數>
+{json.dumps(st.session_state.get('risk_thresholds', {}), ensure_ascii=False)}
+</模型參數>
+<回答要求>
+請根據上述數據集參數與模型參數，簡明扼要地回答用戶的問題。如果問題與這些參數無關，請禮貌地告知用戶您無法回答該問題。請使用繁體中文回答。
+</回答要求>
+<用戶問題>
+{user_input.strip()}
+</用戶問題>
+                        """.strip()
+
+                )
+                st.session_state['chat_history'].append(("bot", response))
+
+    with st.expander("查看對話歷史", expanded=True):
+        for role, msg in st.session_state['chat_history']:
+            if role == "user":
+                st.markdown(f"**您:** {msg}")
+            else:
+                st.markdown(f"**AI:** {msg}")
+
+@st.cache_resource
+def load_chat_pipeline():
+    model_name = "google-bert/bert-base-chinese"
+    return pipeline("text2text-generation", model=model_name, tokenizer=model_name, max_length=512, device=0 if tensorflow_available and tf.config.list_physical_devices('GPU') else None)
+
 # --- 設定頁面 ---
 st.set_page_config(
     page_title="LSTM 模型預測",
@@ -335,7 +383,7 @@ dropout_rate = st.sidebar.slider("Dropout 比率:", 0.0, 0.5, 0.2, 0.05)
 validation_split = st.sidebar.slider("驗證集比例:", 0.0, 0.5, 0.1, 0.05)
 patience = st.sidebar.number_input("早停耐心值 (Patience):", min_value=5, max_value=200, value=50, step=5)
 
-if st.sidebar.button("🌊 執行 LSTM 預測"):
+if st.sidebar.button("🌊 執行 LSTM 預測") or st.session_state.get('success', False):
     if not tensorflow_available:
         st.error("TensorFlow/Keras 庫不可用，無法執行 LSTM 預測。")
         st.stop()
@@ -453,6 +501,7 @@ if st.sidebar.button("🌊 執行 LSTM 預測"):
             X_test = np.reshape(X_test, (X_test.shape[0], X_test.shape[1], 1))
             accuracy_history_callback = AccuracyHistory(X_train, y_train, X_test, y_test, scaler, epsilon_value, look_back)
 
+    st.session_state['success'] = True
 
     # unify model
     if has_npu:
@@ -473,6 +522,9 @@ if st.sidebar.button("🌊 執行 LSTM 預測"):
         
 
     with st.spinner("STEP 3/3: 正在評估與視覺化..."):
+
+        chat_system()
+
         st.subheader("📚 訓練數據概覽")
         if not df_processed.empty:
             total_duration = df_processed['ds'].max() - df_processed['ds'].min()
