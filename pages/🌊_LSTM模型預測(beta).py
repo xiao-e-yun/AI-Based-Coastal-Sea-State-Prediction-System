@@ -259,8 +259,23 @@ def chat_system():
 <模型參數>
 {json.dumps(st.session_state.get('risk_thresholds', {}), ensure_ascii=False)}
 </模型參數>
+<訓練數據>
+尚未實作
+</訓練數據>
+<數據品質>
+尚未實作
+</數據品質>
+<模型性能>
+尚未實作
+</模型性能>
+<預測結果>
+尚未實作
+</預測結果>
+<專有名詞>
+尚未寫入
+</專有名詞>
 <回答要求>
-請根據上述數據集參數與模型參數，簡明扼要地回答用戶的問題。如果問題與這些參數無關，請禮貌地告知用戶您無法回答該問題。請使用繁體中文回答。
+請根據上述資料，簡明扼要地回答用戶的問題。如果問題與這些參數無關，請禮貌地告知用戶您無法回答該問題。請使用繁體中文回答，且不應將上述參數直接複製到回答中。
 </回答要求>
 <用戶問題>
 {user_input.strip()}
@@ -270,17 +285,18 @@ def chat_system():
                 )
                 st.session_state['chat_history'].append(("bot", response))
 
-    with st.expander("查看對話歷史", expanded=True):
-        for role, msg in st.session_state['chat_history']:
-            if role == "user":
-                st.markdown(f"**您:** {msg}")
-            else:
-                st.markdown(f"**AI:** {msg}")
+    if st.session_state['chat_history']:
+        with st.expander("查看對話歷史", expanded=True):
+            for role, msg in st.session_state['chat_history']:
+                if role == "user":
+                    st.markdown(f"**您:** {msg}")
+                else:
+                    st.markdown(f"**AI:** {msg}")
 
 @st.cache_resource
 def load_chat_pipeline():
-    model_name = "google-bert/bert-base-chinese"
-    return pipeline("text2text-generation", model=model_name, tokenizer=model_name, max_length=512, device=0 if tensorflow_available and tf.config.list_physical_devices('GPU') else None)
+    model_name = "google/gemma-3-270m"
+    return pipeline("text2text-generation", model=model_name, token=True, max_new_tokens=4096, device=0 if tensorflow_available and tf.config.list_physical_devices('GPU') else None)
 
 # --- 設定頁面 ---
 st.set_page_config(
