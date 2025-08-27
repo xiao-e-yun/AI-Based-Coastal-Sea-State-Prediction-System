@@ -67,7 +67,12 @@
     streamlit run app.py
     ```
 
-5.  開啟您的瀏覽器並前往 `http://localhost:8501`。
+5.  **登入 Hugging Face 以使用 Google Gemma**
+    ```bash
+    hf auth login
+    ```
+
+6.  開啟您的瀏覽器並前往 `http://localhost:8501`。
 
 ## 主要架構概覽
 
