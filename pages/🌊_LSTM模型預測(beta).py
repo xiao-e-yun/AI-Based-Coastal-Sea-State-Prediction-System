@@ -12,9 +12,10 @@ from sklearn.preprocessing import MinMaxScaler
 from sklearn.metrics import mean_squared_error
 from scipy.stats import pearsonr 
 import zipfile
-from transformers import pipeline
-from onnxruntime import InferenceSession,SessionOptions
+from onnxruntime import InferenceSession
 import tf2onnx
+from transformers import AutoTokenizer
+from optimum.onnxruntime import ORTModelForCausalLM
 
 # --- 新增 ---
 import joblib
@@ -154,7 +155,7 @@ def load_local_model(parameters: dict):
                 # Because LSTM can't run on NPU
                 # sess_options=options,
                 providers=["QNNExecutionProvider","CPUExecutionProvider"],
-                provider_options=[{"backend_path": "QnnHtp.dll"}]
+                provider_options=[{"backend_path": "QnnHtp.dll"},{}]
             )
 
             return model, scaler, history_data
@@ -250,63 +251,69 @@ class AccuracyHistory(Callback):
 # # TODO: Reset chat history
 def chat_system():
     print(1)
-#     st.header("🤖 AI 問答")
-#     if 'chat_history' not in st.session_state:
-#         st.session_state['chat_history'] = []
-#     pipeline = load_chat_pipeline()
+    st.header("🤖 AI 問答")
+    if 'chat_history' not in st.session_state:
+        st.session_state['chat_history'] = []
+    pipeline = load_chat_pipeline()
 
-#     col1, col2 = st.columns([4, 1])
-#     with col1:
-#         user_input = st.text_input("請輸入您的問題:", key='lstm_chat_input', label_visibility='collapsed')
-#     with col2:
-#         if st.button("發送", key='lstm_chat_send') and user_input.strip():
-#                 st.session_state['chat_history'].append(("user", user_input.strip()))
-#                 response = pipeline(
-#                         f"""
-# <數據集參數>
-# {json.dumps(st.session_state.get('parameter_info', {}), ensure_ascii=False)}
-# </數據集參數>
-# <模型參數>
-# {json.dumps(st.session_state.get('risk_thresholds', {}), ensure_ascii=False)}
-# </模型參數>
-# <訓練數據>
-# 尚未實作
-# </訓練數據>
-# <數據品質>
-# 尚未實作
-# </數據品質>
-# <模型性能>
-# 尚未實作
-# </模型性能>
-# <預測結果>
-# 尚未實作
-# </預測結果>
-# <專有名詞>
-# 尚未寫入
-# </專有名詞>
-# <回答要求>
-# 請根據上述資料，簡明扼要地回答用戶的問題。如果問題與這些參數無關，請禮貌地告知用戶您無法回答該問題。請使用繁體中文回答，且不應將上述參數直接複製到回答中。
-# </回答要求>
-# <用戶問題>
-# {user_input.strip()}
-# </用戶問題>
-#                         """.strip()
+    col1, col2 = st.columns([4, 1])
+    with col1:
+        user_input = st.text_input("請輸入您的問題:", key='lstm_chat_input', label_visibility='collapsed')
+    with col2:
+        if st.button("發送", key='lstm_chat_send') and user_input.strip():
+                st.session_state['chat_history'].append(("user", user_input.strip()))
+                response = pipeline(
+                        f"""
+<數據集參數>
+{json.dumps(st.session_state.get('parameter_info', {}), ensure_ascii=False)}
+</數據集參數>
+<模型參數>
+{json.dumps(st.session_state.get('risk_thresholds', {}), ensure_ascii=False)}
+</模型參數>
+<訓練數據>
+尚未實作
+</訓練數據>
+<數據品質>
+尚未實作
+</數據品質>
+<模型性能>
+尚未實作
+</模型性能>
+<預測結果>
+尚未實作
+</預測結果>
+<專有名詞>
+尚未寫入
+</專有名詞>
+<用戶問題>
+{user_input.strip()}
+</用戶問題>
+                        """.strip()
 
-#                 )
-#                 st.session_state['chat_history'].append(("bot", response))
+                )
+                st.session_state['chat_history'].append(("bot", response))
 
-#     if st.session_state['chat_history']:
-#         with st.expander("查看對話歷史", expanded=True):
-#             for role, msg in st.session_state['chat_history']:
-#                 if role == "user":
-#                     st.markdown(f"**您:** {msg}")
-#                 else:
-#                     st.markdown(f"**AI:** {msg}")
+    if st.session_state['chat_history']:
+        with st.expander("查看對話歷史", expanded=True):
+            for role, msg in st.session_state['chat_history']:
+                if role == "user":
+                    st.markdown(f"**您:** {msg}")
+                else:
+                    st.markdown(f"**AI:** {msg}")
 
-# @st.cache_resource
-# def load_chat_pipeline():
-#     model_name = "google/gemma-3-270m"
-#     return pipeline("text2text-generation", model=model_name, token=True, max_new_tokens=4096, device=0 if tensorflow_available and tf.config.list_physical_devices('GPU') else None)
+@st.cache_resource
+def load_chat_pipeline():
+    model_name = "google/gemma-2b"
+    model = ORTModelForCausalLM.from_pretrained(
+        "./gemma/",
+        provider="QNNExecutionProvider",
+        provider_options=[{"backend_path": "QnnHtp.dll"}],
+        use_cache=False,
+    )
+
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+
+    return lambda x: model.generate(**tokenizer(x, return_tensors="pt"), max_new_tokens=4096)
 
 # --- 設定頁面 ---
 st.set_page_config(
