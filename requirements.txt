@@ -21,4 +21,3 @@ torch
 tf-keras
 tf2onnx
 onnxruntime-qnn
-optimum

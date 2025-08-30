@@ -52,24 +52,23 @@
       .venv\Scripts\activate.bat
       ```
 
-    - **macOS / Linux (使用 bash/zsh):**
-      ```bash
-      source .venv/bin/activate
-      ```
-
 3.  **安裝相依套件**
     ```bash
     pip install -r requirements.txt
     ```
 
-4.  **執行應用程式**
+4.  **啟動 kuwa-aios**
     ```bash
-    streamlit run app.py
+    git clone https://github.com/kuwaai/kuwa-aios.git
+    cd kuwa-aios/src/library/client
+    pip install .
+    cd ../../../windows
+    start "build & start.bat"
     ```
 
-5.  **登入 Hugging Face 以使用 Google Gemma**
+5.  **執行應用程式**
     ```bash
-    hf auth login
+    streamlit run app.py
     ```
 
 6.  開啟您的瀏覽器並前往 `http://localhost:8501`。

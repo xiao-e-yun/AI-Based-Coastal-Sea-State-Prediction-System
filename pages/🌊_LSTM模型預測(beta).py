@@ -16,6 +16,8 @@ from onnxruntime import InferenceSession
 import tf2onnx
 from transformers import AutoTokenizer
 from optimum.onnxruntime import ORTModelForCausalLM
+from kuwa.client import KuwaClient
+import asyncio
 
 # --- 新增 ---
 import joblib
@@ -285,6 +287,9 @@ def chat_system():
 <專有名詞>
 尚未寫入
 </專有名詞>
+<輸出格式>
+請使用繁體中文顯示
+</輸出格式>
 <用戶問題>
 {user_input.strip()}
 </用戶問題>
@@ -301,19 +306,31 @@ def chat_system():
                 else:
                     st.markdown(f"**AI:** {msg}")
 
-@st.cache_resource
-def load_chat_pipeline():
-    model_name = "google/gemma-2b"
-    model = ORTModelForCausalLM.from_pretrained(
-        "./gemma/",
-        provider="QNNExecutionProvider",
-        provider_options=[{"backend_path": "QnnHtp.dll"}],
-        use_cache=False,
+async def call_kuwa_api(x):
+    token = os.getenv('KUWA_TOKEN')
+    if not token:
+        st.warning("缺少 Kuwa Token")
+
+    client = KuwaClient(
+        base_url="http://127.0.0.1",
+        model=".bot/Llama 3.2 3B @NPU",
+        auth_token=token,
     )
+    generator = client.chat_complete(messages=[{"role": "user", "content": x}], streaming=False)
 
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    result = ""
+    async for chunk in generator:
+        result += chunk
+    return result
 
-    return lambda x: model.generate(**tokenizer(x, return_tensors="pt"), max_new_tokens=4096)
+@st.cache_resource
+def load_chat_pipeline():    
+   
+
+    def generator(x):
+        return asyncio.run(call_kuwa_api(x))
+
+    return generator
 
 # --- 設定頁面 ---
 st.set_page_config(

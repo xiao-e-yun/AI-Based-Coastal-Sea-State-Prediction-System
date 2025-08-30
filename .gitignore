@@ -2,4 +2,4 @@
 utils/__pycache__
 dataset/
 trained_models/
-gemma/
+.env
