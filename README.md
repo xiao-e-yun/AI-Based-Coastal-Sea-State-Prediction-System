@@ -65,9 +65,11 @@
     cd ../../../windows
     start "build & start.bat"
     ```
+    紀錄 Settings > Kuwa Token 
 
-5.  **執行應用程式**
+5.  **執行應用程式** (cmd)
     ```bash
+    set KUWA_TOKEN="{你的Kuwa Token}"
     streamlit run app.py
     ```
 
