@@ -1,3 +1,6 @@
+from datetime import datetime
+import hashlib
+import joblib
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -7,34 +10,21 @@ from plotly.subplots import make_subplots
 import os
 import io
 import json
+import requests
 import plotly.express as px
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.metrics import mean_squared_error
 from scipy.stats import pearsonr 
 import zipfile
-
-# --- 新增 ---
-import joblib
-import hashlib
-
+import tensorflow as tf
+from keras.models import Sequential
+from keras.layers import Dense, Dropout, Input 
+from keras.callbacks import EarlyStopping, Callback 
+from keras.models import load_model
 from utils.helpers import get_station_name_from_id, initialize_session_state, load_data
 
 pio.templates.default = "plotly_white"
 
-# --- 嘗試導入 TensorFlow / Keras ---
-tensorflow_available = False
-try:
-    import tensorflow as tf
-    from keras.models import Sequential, Model
-    from keras.layers import Dense, Dropout, Input 
-    from keras.callbacks import EarlyStopping, Callback 
-    from keras.models import load_model # --- 新增 ---
-    tensorflow_available = True
-except ImportError:
-    st.error("錯誤：TensorFlow/Keras 庫未安裝或無法載入。LSTM 模型預測功能將無法使用。")
-    st.info("若需使用此功能，請在您的 Python 環境中運行以下命令：")
-    st.code("pip install tensorflow scikit-learn numpy plotly scipy joblib")
-    st.warning("確保您的 TensorFlow 安裝與您的系統和 CUDA 版本兼容 (如果使用 GPU)。")
 
 # --- 新增：模型快取輔助函式 ---
 def analyze_data_quality(df, relevant_params):
@@ -94,14 +84,13 @@ def assess_risk(value, param_key):
         return "警告"
     else:
         return "安全"
-def get_local_model_paths(parameters: dict):
+def get_local_model_paths(parameters: str):
     """根據參數字典生成唯一的模型、scaler和history路徑"""
     model_dir = "trained_models"
     if not os.path.exists(model_dir):
         os.makedirs(model_dir)
         
-    config_str = "".join([f"{k}:{v}" for k, v in sorted(parameters.items())])
-    model_hash = hashlib.md5(config_str.encode()).hexdigest()
+    model_hash = hashlib.md5(parameters.encode()).hexdigest()
     
     model_path = os.path.join(model_dir, f"lstm_model_{model_hash}.keras")
     scaler_path = os.path.join(model_dir, f"lstm_scaler_{model_hash}.joblib")
@@ -110,7 +99,7 @@ def get_local_model_paths(parameters: dict):
     
     return model_path, scaler_path, history_path
 
-def save_local_model(model, scaler, history_data: dict, parameters: dict):
+def save_local_model(model, scaler, history_data: dict, parameters: str):
     """保存模型、scaler 和訓練歷史"""
     try:
         model_path, scaler_path, history_path = get_local_model_paths(parameters)
@@ -123,7 +112,7 @@ def save_local_model(model, scaler, history_data: dict, parameters: dict):
     except Exception as e:
         st.warning(f"儲存模型快取時發生錯誤: {e}")
 
-def load_local_model(parameters: dict):
+def load_local_model(parameters: str):
     """嘗試載入已保存的模型、scaler 和訓練歷史"""
     model_path, scaler_path, history_path = get_local_model_paths(parameters)
     
@@ -230,15 +219,11 @@ def chat_system():
     st.header("🤖 AI 問答")
     if 'chat_history' not in st.session_state:
         st.session_state['chat_history'] = []
-    pipeline = load_chat_pipeline()
 
-    col1, col2 = st.columns([4, 1])
-    with col1:
-        user_input = st.text_input("請輸入您的問題:", key='lstm_chat_input', label_visibility='collapsed')
-    with col2:
-        if st.button("發送", key='lstm_chat_send') and user_input.strip():
-                st.session_state['chat_history'].append(("user", user_input.strip()))
-                response = pipeline(
+    user_input = st.text_input("請輸入您的問題:", key='lstm_chat_input', label_visibility='collapsed')
+    if user_input.strip():
+        st.session_state['chat_history'].append(("user", user_input.strip()))
+        response = chat(
                         f"""
 <數據集參數>
 {json.dumps(st.session_state.get('parameter_info', {}), ensure_ascii=False)}
@@ -267,10 +252,8 @@ def chat_system():
 <用戶問題>
 {user_input.strip()}
 </用戶問題>
-                        """.strip()
-
-                )
-                st.session_state['chat_history'].append(("bot", response))
+        """.strip())
+        st.session_state['chat_history'].append(("bot", response))
 
     if st.session_state['chat_history']:
         with st.expander("查看對話歷史", expanded=True):
@@ -280,21 +263,32 @@ def chat_system():
                 else:
                     st.markdown(f"**AI:** {msg}")
 
-@st.cache_resource
-def load_chat_pipeline():
-    model_name = "google/gemma-3-270m"
-    return pipeline("text2text-generation", model=model_name, token=True, max_new_tokens=4096, device=0 if tensorflow_available and tf.config.list_physical_devices('GPU') else None)
+def chat(prompt):
+    url = "http://192.168.0.200:11434/api/generate"
+    payload = {
+        "model": "gemma3:4b",
+        "prompt": prompt,
+        "stream": False  # Set to True if you want streaming responses
+    }
+
+    try:
+        response = requests.post(url, json=payload)
+        response.raise_for_status()
+        data = response.json()
+        return data.get("response", "")
+    except requests.RequestException as e:
+        return f"Error: {e}"
 
 # --- 設定頁面 ---
 st.set_page_config(
-    page_title="LSTM 模型預測",
+    page_title="時序列模型預測",
     page_icon="🌊",
     layout="wide"
 )
 initialize_session_state()
 
-st.title("🌊 海洋數據 LSTM 模型預測")
-st.markdown("使用長短期記憶 (LSTM) 類神經網絡預測海洋數據的未來趨勢。")
+st.title("🌊 海洋數據時序列模型預測")
+st.markdown("使用時序列模型類神經網絡預測海洋數據的未來趨勢。")
 
 predictable_params_config_map = {
     col_name: info["display_zh"] for col_name, info in st.session_state.get('parameter_info', {}).items()
@@ -308,8 +302,7 @@ def create_sequences(data, look_back):
         y.append(data[i + look_back, 0])
     return np.array(X), np.array(y)
 
-# --- 側邊欄：LSTM 預測設定控制項 ---
-st.sidebar.header("LSTM 預測設定")
+st.sidebar.header("時序列模型預測預測設定")
 
 locations = st.session_state.get('locations', [])
 
@@ -377,21 +370,29 @@ st.sidebar.markdown("---")
 st.sidebar.subheader("模型準確率設定")
 epsilon_value = st.sidebar.number_input("準確率 ε 誤差區間:", min_value=0.001, max_value=10.0, value=0.1, step=0.01, format="%.3f", help="設定一個誤差範圍 ε。當 |預測值 - 實際值| <= ε 時，此預測被視為「正確」。", key='pages_10_epsilon_value')
 st.sidebar.markdown("---")
-st.sidebar.subheader("LSTM 模型參數")
+st.sidebar.subheader("時序列模型參數")
 model_type = st.sidebar.selectbox("選擇模型類型:", options=["LSTM", "GRU", "SimpleRNN"], index=0, key='pages_10_model_type')
 look_back = st.sidebar.slider("回溯時間步 (look_back):", 1, 48, 6, 1)
-lstm_units = st.sidebar.slider("LSTM 層單元數:", 10, 200, 50, 10)
+lstm_units = st.sidebar.slider("時序列模型層單元數:", 10, 200, 50, 10)
 epochs = st.sidebar.number_input("訓練迭代次數 (Epochs):", 10, 500, 50, 10)
 batch_size = st.sidebar.number_input("批次大小 (Batch Size):", 1, 128, 32, 8)
 dropout_rate = st.sidebar.slider("Dropout 比率:", 0.0, 0.5, 0.2, 0.05)
 validation_split = st.sidebar.slider("驗證集比例:", 0.0, 0.5, 0.1, 0.05)
 patience = st.sidebar.number_input("早停耐心值 (Patience):", min_value=5, max_value=200, value=50, step=5)
 
-if st.sidebar.button("🌊 執行 LSTM 預測"):
-    if not tensorflow_available:
-        st.error("TensorFlow/Keras 庫不可用，無法執行 LSTM 預測。")
-        st.stop()
+st.sidebar.markdown("---")
+cache = st.sidebar.checkbox("快取", value=True, key='pages_10_use_cache')
 
+model_params = json.dumps({
+    "station": selected_station_name, "param": selected_param_col,
+    "freq": selected_freq_pandas, "forecast_period_value": forecast_period_value,
+    "start_date": train_start_date.strftime('%Y-%m-%d'), "end_date": train_end_date.strftime('%Y-%m-%d'),
+    "missing_strategy": missing_value_strategy, "smoothing": smoothing_window if apply_smoothing else 0, "epsilon_value": epsilon_value,
+    "model_type": model_type, "look_back": look_back, "lstm_units": lstm_units, "epochs": epochs,
+    "batch_size": batch_size, "dropout": dropout_rate, "validation_split": validation_split, "patience": patience,
+})
+if st.sidebar.button("🌊 執行 時序列模型 預測") or st.session_state.get('pages_10_last_running', None) == model_params:
+    st.session_state['pages_10_last_running'] = model_params
     if df_initial_check.empty or selected_param_col not in df_initial_check.columns:
         st.error(f"所選測站 '{selected_station_name}' 的數據文件缺少參數 '{selected_param_display}'。")
         st.stop()
@@ -423,21 +424,15 @@ if st.sidebar.button("🌊 執行 LSTM 預測"):
             st.error(f"經過數據預處理後，沒有足夠的有效數據用於預測 (長度需大於 {look_back})。")
             st.stop()
 
-    model_params = {
-        "page": "lstm_prediction", "station": selected_station_name, "param": selected_param_col,
-        "model_type": model_type, "freq": selected_freq_pandas, "look_back": look_back, "lstm_units": lstm_units, "epochs": epochs,
-        "batch_size": batch_size, "dropout": dropout_rate, "smoothing": smoothing_window if apply_smoothing else 0,
-        "start_date": train_start_date.strftime('%Y-%m-%d'), "end_date": train_end_date.strftime('%Y-%m-%d'),
-        "missing_strategy": missing_value_strategy
-    }
-
     model, scaler, history_data = load_local_model(model_params)
+    delta_time = None
     history = None 
 
-    if model is None:
-        st.info("🛠️ 未找到快取模型，開始新的訓練...")
+    if not cache or model is None:
+        if cache:
+            st.info("🛠️ 未找到快取模型，開始新的訓練...")
         st.write("---") 
-        st.write("**STEP 2/3: 正在訓練 LSTM 模型...**") # 用一般文字標題取代 spinner
+        st.write(f"**STEP 2/3: 正在訓練 {model_type} 模型...**") # 用一般文字標題取代 spinner
         
         # 數據縮放與塑形 (這部分程式碼不變)
         scaler = MinMaxScaler(feature_range=(0, 1))
@@ -477,13 +472,15 @@ if st.sidebar.button("🌊 執行 LSTM 預測"):
         
         try:
             # 2. 將 progress_callback 加入 callbacks 列表
+            start = datetime.now()
             history = model.fit(X_train, y_train, epochs=epochs, batch_size=batch_size, 
                                 validation_data=(X_test, y_test), 
                                 callbacks=[early_stopping, accuracy_history_callback, progress_callback], 
                                 verbose=0)
             history_data = history.history
+            delta_time = datetime.now() - start
         except Exception as e:
-            st.error(f"LSTM 模型訓練失敗：{e}")
+            st.error(f"時序列模型訓練失敗：{e}")
             st.stop()
             
         st.success("模型訓練完成！")
@@ -501,6 +498,9 @@ if st.sidebar.button("🌊 執行 LSTM 預測"):
             accuracy_history_callback = AccuracyHistory(X_train, y_train, X_test, y_test, scaler, epsilon_value, look_back)
 
     with st.spinner("STEP 3/3: 正在評估與視覺化..."):
+
+        if delta_time:
+            st.write(f"**訓練時間**: {delta_time}")
 
         chat_system()
 
@@ -655,7 +655,7 @@ if st.sidebar.button("🌊 執行 LSTM 預測"):
         fig.add_trace(go.Scatter(x=train_predict_df['ds'], y=train_predict_df['yhat_train'], mode='lines', name='訓練集預測', line=dict(dash='dot')))
         fig.add_trace(go.Scatter(x=test_predict_df['ds'], y=test_predict_df['yhat_test'], mode='lines', name='測試集預測', line=dict(dash='dot')))
         fig.add_trace(go.Scatter(x=forecast_df['ds'], y=forecast_df['yhat'], mode='lines', name='未來預測', line=dict(dash='dash')))
-        fig.update_layout(title=f"{selected_station_name} - {selected_param_display} LSTM 未來 {forecast_period_value} {selected_prediction_freq_display.split(' ')[0]} 預測", xaxis_title="時間", yaxis_title=f"{selected_param_display} {param_unit}", hovermode="x unified", height=600)
+        fig.update_layout(title=f"{selected_station_name} - {selected_param_display} {model_type} 未來 {forecast_period_value} {selected_prediction_freq_display.split(' ')[0]} 預測", xaxis_title="時間", yaxis_title=f"{selected_param_display} {param_unit}", hovermode="x unified", height=600)
         st.plotly_chart(fig, use_container_width=True, key="forecast_chart")
 
         # 3. 在圖表下方，顯示風險評估結果
@@ -725,7 +725,7 @@ if st.sidebar.button("🌊 執行 LSTM 預測"):
             st.download_button(
                 label="下載預測數據 (CSV)",
                 data=csv_data,
-                file_name=f"{selected_station_name}_{selected_param_col}_LSTM_forecast_data.csv",
+                file_name=f"{selected_station_name}_{selected_param_col}_{model_type}_forecast_data.csv",
                 mime="text/csv",
                 use_container_width=True
             )
@@ -737,7 +737,7 @@ if st.sidebar.button("🌊 執行 LSTM 預測"):
             st.download_button(
                 label="下載預測圖表 (HTML)",
                 data=fig_bytes,
-                file_name=f"{selected_station_name}_{selected_param_col}_LSTM_forecast_chart.html",
+                file_name=f"{selected_station_name}_{selected_param_col}_{model_type}_forecast_chart.html",
                 mime="text/html",
                 use_container_width=True
             )
@@ -747,7 +747,7 @@ if st.sidebar.button("🌊 執行 LSTM 預測"):
             actual_epochs_text = f"(實際執行: {len(history_data['loss'])})" if history_data else "(從快取載入)"
 
             report_content = f"""
-    # LSTM 時間序列預測報告
+    # {model_type} 時間序列預測報告
     ## 測站: {selected_station_name}
     ## 預測參數: {selected_param_display} ({param_unit})
 
@@ -768,9 +768,9 @@ if st.sidebar.button("🌊 執行 LSTM 預測"):
 
             report_content += f"""
     ---
-    ## 3. LSTM 模型參數
+    ## 3. {model_type} 模型參數
     - **回溯時間步 (look_back)**: {look_back}
-    - **LSTM 層單元數**: {lstm_units}
+    - **{model_type} 層單元數**: {lstm_units}
     - **訓練迭代次數 (Epochs)**: {epochs} {actual_epochs_text}
     - **批次大小 (Batch Size)**: {batch_size}
     - **Dropout 比率**: {dropout_rate}
@@ -795,7 +795,7 @@ if st.sidebar.button("🌊 執行 LSTM 預測"):
             st.download_button(
                 label="下載完整報告 (TXT)",
                 data=report_content.encode('utf-8'),
-                file_name=f"{selected_station_name}_{selected_param_col}_LSTM_report.txt",
+                file_name=f"{selected_station_name}_{selected_param_col}_{model_type}_report.txt",
                 mime="text/plain",
                 use_container_width=True,
                 help="下載包含所有執行參數與結果的文本報告"
@@ -803,9 +803,9 @@ if st.sidebar.button("🌊 執行 LSTM 預測"):
 
         zip_buffer = io.BytesIO()
         with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
-            zf.writestr(f"{selected_station_name}_{selected_param_col}_LSTM_forecast_data.csv", csv_data)
-            zf.writestr(f"{selected_station_name}_{selected_param_col}_LSTM_report.txt", report_content.encode('utf-8'))
-            zf.writestr(f"{selected_station_name}_{selected_param_col}_LSTM_forecast_chart.html", fig_bytes)
-        st.download_button("🚀 一鍵打包下載 (ZIP)", zip_buffer.getvalue(), f"{selected_station_name}_{selected_param_col}_LSTM_forecast_package.zip",
+            zf.writestr(f"{selected_station_name}_{selected_param_col}_{model_type}_forecast_data.csv", csv_data)
+            zf.writestr(f"{selected_station_name}_{selected_param_col}_{model_type}_report.txt", report_content.encode('utf-8'))
+            zf.writestr(f"{selected_station_name}_{selected_param_col}_{model_type}_forecast_chart.html", fig_bytes)
+        st.download_button("🚀 一鍵打包下載 (ZIP)", zip_buffer.getvalue(), f"{selected_station_name}_{selected_param_col}_{model_type}_forecast_package.zip",
                            "application/zip", use_container_width=True,
                            help="下載包含預測數據、圖表和報告的壓縮包")
