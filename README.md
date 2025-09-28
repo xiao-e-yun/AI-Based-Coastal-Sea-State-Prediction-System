@@ -67,9 +67,10 @@
     streamlit run app.py
     ```
 
-5.  **登入 Hugging Face 以使用 Google Gemma**
+5.  **(選用) 下載 ollama 並抓取 模型**
     ```bash
-    hf auth login
+    ollama pull gemma3:4b
+    ollama pull mxbai-embed-large
     ```
 
 6.  開啟您的瀏覽器並前往 `http://localhost:8501`。

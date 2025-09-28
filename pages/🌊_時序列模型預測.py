@@ -17,6 +17,7 @@ from sklearn.metrics import mean_squared_error
 from scipy.stats import pearsonr 
 import zipfile
 import tensorflow as tf
+import chromadb 
 from keras.models import Sequential
 from keras.layers import Dense, Dropout, Input 
 from keras.callbacks import EarlyStopping, Callback 
@@ -223,8 +224,51 @@ def chat_system():
     user_input = st.text_input("請輸入您的問題:", key='lstm_chat_input', label_visibility='collapsed')
     if user_input.strip():
         st.session_state['chat_history'].append(("user", user_input.strip()))
-        response = chat(
-                        f"""
+        chat = chat_context()
+        response = chat(user_input.strip())
+        st.session_state['chat_history'].append(("bot", response))
+
+    if st.session_state['chat_history']:
+        with st.expander("查看對話歷史", expanded=True):
+            for role, msg in st.session_state['chat_history']:
+                if role == "user":
+                    st.markdown(f"**您:** {msg}")
+                else:
+                    st.markdown(f"**AI:** {msg}")
+
+@st.cache_resource
+def chat_context():
+    from ollama import Client
+
+    ollama = Client(host="http://192.168.0.200:11434")
+
+    client = chromadb.Client()
+    collection = client.get_or_create_collection("propers")
+
+    propers = [
+        "LSTM (Long Short-Term Memory) 是一種特殊的循環神經網絡(RNN)，能夠學習和記憶長期依賴關係，適用於處理和預測時間序列數據。",
+        "GRU (Gated Recurrent Unit) 是一種簡化版的LSTM，具有較少的參數，能夠有效捕捉時間序列中的長期依賴關係，適用於需要較快訓練速度的應用。",
+        "SimpleRNN 是一種基本的循環神經網絡(RNN)，適用於處理時間序列數據，但在捕捉長期依賴關係方面不如LSTM和GRU。",
+    ]
+    for i, d in enumerate(propers):
+        response = ollama.embed(model="mxbai-embed-large", input=d)
+        embeddings = response["embeddings"]
+
+        collection.add(
+            ids=[str(i)],
+            embeddings=embeddings,
+            documents=[d]
+        )
+
+    def query(input: str):
+        output = ollama.embed(model="mxbai-embed-large", input=input)
+        results = collection.query(
+            query_embeddings=output["embeddings"],
+            n_results=3
+        )
+        contexts = "\n".join([item for sublist in results['documents'] for item in sublist])
+
+        prompt = f"""
 <數據集參數>
 {json.dumps(st.session_state.get('parameter_info', {}), ensure_ascii=False)}
 </數據集參數>
@@ -244,40 +288,21 @@ def chat_system():
 尚未實作
 </預測結果>
 <專有名詞>
-尚未寫入
+{contexts}
 </專有名詞>
 <回答要求>
 請根據上述資料，簡明扼要地回答用戶的問題。如果問題與這些參數無關，請禮貌地告知用戶您無法回答該問題。請使用繁體中文回答，且不應將上述參數直接複製到回答中。
 </回答要求>
 <用戶問題>
-{user_input.strip()}
-</用戶問題>
-        """.strip())
-        st.session_state['chat_history'].append(("bot", response))
+{input}
+</用戶問題>"""
+        
+        output = ollama.generate(model="gemma3:4b", prompt=prompt, stream=False)
+        return output.response
 
-    if st.session_state['chat_history']:
-        with st.expander("查看對話歷史", expanded=True):
-            for role, msg in st.session_state['chat_history']:
-                if role == "user":
-                    st.markdown(f"**您:** {msg}")
-                else:
-                    st.markdown(f"**AI:** {msg}")
+    return query
 
-def chat(prompt):
-    url = "http://192.168.0.200:11434/api/generate"
-    payload = {
-        "model": "gemma3:4b",
-        "prompt": prompt,
-        "stream": False  # Set to True if you want streaming responses
-    }
 
-    try:
-        response = requests.post(url, json=payload)
-        response.raise_for_status()
-        data = response.json()
-        return data.get("response", "")
-    except requests.RequestException as e:
-        return f"Error: {e}"
 
 # --- 設定頁面 ---
 st.set_page_config(

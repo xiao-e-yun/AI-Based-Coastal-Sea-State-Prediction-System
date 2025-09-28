@@ -19,3 +19,5 @@ schedule
 transformers
 torch
 tf-keras
+chromadb
+ollama
