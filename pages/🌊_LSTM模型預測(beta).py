@@ -12,6 +12,7 @@ from sklearn.preprocessing import MinMaxScaler
 from sklearn.metrics import mean_squared_error
 from scipy.stats import pearsonr 
 import zipfile
+import asyncio
 
 # --- 新增 ---
 import joblib
@@ -510,7 +511,7 @@ if st.sidebar.button("🌊 執行 LSTM 預測") or st.session_state.get('success
             X_test = np.reshape(X_test, (X_test.shape[0], X_test.shape[1], 1))
             accuracy_history_callback = AccuracyHistory(X_train, y_train, X_test, y_test, scaler, epsilon_value, look_back)
 
-        st.session_state['success'] = True
+    st.session_state['success'] = True
 
     with st.spinner("STEP 3/3: 正在評估與視覺化..."):
 
