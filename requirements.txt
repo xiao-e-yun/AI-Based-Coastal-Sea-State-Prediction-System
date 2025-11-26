@@ -18,6 +18,5 @@ streamlit_folium
 schedule
 transformers
 torch
+asyncio
 tf-keras
-tf2onnx
-onnxruntime-qnn

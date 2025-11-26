@@ -12,12 +12,6 @@ from sklearn.preprocessing import MinMaxScaler
 from sklearn.metrics import mean_squared_error
 from scipy.stats import pearsonr 
 import zipfile
-from onnxruntime import InferenceSession
-import tf2onnx
-from transformers import AutoTokenizer
-from optimum.onnxruntime import ORTModelForCausalLM
-from kuwa.client import KuwaClient
-import asyncio
 
 # --- 新增 ---
 import joblib
@@ -34,6 +28,7 @@ try:
     from keras.models import Sequential, Model
     from keras.layers import LSTM, Dense, Dropout, Input 
     from keras.callbacks import EarlyStopping, Callback 
+    from keras.models import load_model # --- 新增 ---
     tensorflow_available = True
 except ImportError:
     st.error("錯誤：TensorFlow/Keras 庫未安裝或無法載入。LSTM 模型預測功能將無法使用。")
@@ -108,7 +103,7 @@ def get_local_model_paths(parameters: dict):
     config_str = "".join([f"{k}:{v}" for k, v in sorted(parameters.items())])
     model_hash = hashlib.md5(config_str.encode()).hexdigest()
     
-    model_path = os.path.join(model_dir, f"lstm_model_{model_hash}.onnx")
+    model_path = os.path.join(model_dir, f"lstm_model_{model_hash}.keras")
     scaler_path = os.path.join(model_dir, f"lstm_scaler_{model_hash}.joblib")
     # 新增 history 路徑
     history_path = os.path.join(model_dir, f"lstm_history_{model_hash}.json")
@@ -117,15 +112,9 @@ def get_local_model_paths(parameters: dict):
 
 def save_local_model(model, scaler, history_data: dict, parameters: dict):
     """保存模型、scaler 和訓練歷史"""
-    model.output_names=['output']
-
     try:
         model_path, scaler_path, history_path = get_local_model_paths(parameters)
-
-        (onnx_model_proto, _storage) = tf2onnx.convert.from_keras(model, opset=13)
-        with open(model_path, "wb") as f:
-            f.write(onnx_model_proto.SerializeToString())
-
+        model.save(model_path)
         joblib.dump(scaler, scaler_path)
         # 將 history 字典存成 json
         with open(history_path, 'w') as f:
@@ -141,25 +130,12 @@ def load_local_model(parameters: dict):
     # 確認三個檔案都存在
     if os.path.exists(model_path) and os.path.exists(scaler_path) and os.path.exists(history_path):
         try:
+            tf.keras.backend.clear_session()
+            model = load_model(model_path)
             scaler = joblib.load(scaler_path)
+            # 讀取 history json
             with open(history_path, 'r') as f:
                 history_data = json.load(f)
-
-            # options = SessionOptions()
-            # options.add_session_config_entry("session.disable_cpu_ep_fallback", "1")
-
-            class OnnxModel(InferenceSession):
-                def predict(self, input):
-                    return super().run(None, {'keras_tensor': input.astype(np.float32)})[0]
-                
-            model = OnnxModel(
-                model_path,
-                # Because LSTM can't run on NPU
-                # sess_options=options,
-                providers=["QNNExecutionProvider","CPUExecutionProvider"],
-                provider_options=[{"backend_path": "QnnHtp.dll"},{}]
-            )
-
             return model, scaler, history_data
         except Exception as e:
             st.warning(f"載入快取模型時發生錯誤: {e}。將重新進行訓練。")
@@ -174,7 +150,7 @@ class StreamlitProgressBar(Callback):
     def __init__(self, epochs):
         super().__init__()
         self.epochs = epochs
-        # 在 Streamlit 介面上建立一個進度條元件和一個   空的文字位置
+        # 在 Streamlit 介面上建立一個進度條元件和一個空的文字位置
         self.progress_bar = st.progress(0)
         self.status_text = st.empty()
 
@@ -211,7 +187,7 @@ class AccuracyHistory(Callback):
     # 1. 將所有計算邏輯移到一個新函式中，並接收 model 作為參數
     def calculate_metrics(self, model):
         """手動計算並記錄一次準確率和相關係數"""
-        train_pred_scaled = model.predict(self.X_train)
+        train_pred_scaled = model.predict(self.X_train, verbose=0)
         train_actual_scaled = self.y_train.reshape(-1, 1)
         train_pred_original = self.scaler.inverse_transform(train_pred_scaled)
         train_actual_original = self.scaler.inverse_transform(train_actual_scaled)
@@ -222,7 +198,7 @@ class AccuracyHistory(Callback):
             self.train_correlations.append(train_corr)
         else: self.train_correlations.append(np.nan)
 
-        val_pred_scaled = model.predict(self.X_test)
+        val_pred_scaled = model.predict(self.X_test, verbose=0)
         val_actual_scaled = self.y_test.reshape(-1, 1)
         val_pred_original = self.scaler.inverse_transform(val_pred_scaled)
         val_actual_original = self.scaler.inverse_transform(val_actual_scaled)
@@ -248,7 +224,6 @@ class AccuracyHistory(Callback):
         logs['val_accuracy'] = self.val_accuracies[-1]
         logs['train_correlation'] = self.train_correlations[-1]
         logs['val_correlation'] = self.val_correlations[-1]
-
 
 # # TODO: Reset chat history
 def chat_system():
@@ -480,7 +455,6 @@ if st.sidebar.button("🌊 執行 LSTM 預測") or st.session_state.get('success
     model, scaler, history_data = load_local_model(model_params)
     history = None 
 
-
     if model is None:
         st.info("🛠️ 未找到快取模型，開始新的訓練...")
         st.write("---") 
@@ -516,7 +490,7 @@ if st.sidebar.button("🌊 執行 LSTM 預測") or st.session_state.get('success
             history = model.fit(X_train, y_train, epochs=epochs, batch_size=batch_size, 
                                 validation_data=(X_test, y_test), 
                                 callbacks=[early_stopping, accuracy_history_callback, progress_callback], 
-                                )
+                                verbose=0)
             history_data = history.history
         except Exception as e:
             st.error(f"LSTM 模型訓練失敗：{e}")
@@ -524,7 +498,6 @@ if st.sidebar.button("🌊 執行 LSTM 預測") or st.session_state.get('success
             
         st.success("模型訓練完成！")
         save_local_model(model, scaler, history_data, model_params)
-        model, scaler, history_data = load_local_model(model_params)
     else:
         st.success("✅ 成功載入快取模型！")
         with st.spinner("STEP 2/3: 正在準備數據..."):
@@ -537,7 +510,7 @@ if st.sidebar.button("🌊 執行 LSTM 預測") or st.session_state.get('success
             X_test = np.reshape(X_test, (X_test.shape[0], X_test.shape[1], 1))
             accuracy_history_callback = AccuracyHistory(X_train, y_train, X_test, y_test, scaler, epsilon_value, look_back)
 
-    st.session_state['success'] = True
+        st.session_state['success'] = True
 
     with st.spinner("STEP 3/3: 正在評估與視覺化..."):
 
@@ -601,8 +574,6 @@ if st.sidebar.button("🌊 執行 LSTM 預測") or st.session_state.get('success
                     st.info("數據品質非常高，沒有偵測到缺失、零、負值或異常值。")
         st.write("---")
         st.subheader("📉 模型性能評估")
-
-
         train_predict = model.predict(X_train)
         train_predict = scaler.inverse_transform(train_predict)
         y_train_actual = scaler.inverse_transform(y_train.reshape(-1, 1))
@@ -662,7 +633,7 @@ if st.sidebar.button("🌊 執行 LSTM 預測") or st.session_state.get('success
         last_sequence = scaled_data[-look_back:]
         future_predictions = []
         for _ in range(forecast_period_value):
-            next_pred = model.predict(last_sequence.reshape(1, look_back, 1))[0, 0]
+            next_pred = model.predict(last_sequence.reshape(1, look_back, 1), verbose=0)[0, 0]
             future_predictions.append(next_pred)
             last_sequence = np.append(last_sequence[1:], [[next_pred]], axis=0)
         future_predictions = scaler.inverse_transform(np.array(future_predictions).reshape(-1, 1))
